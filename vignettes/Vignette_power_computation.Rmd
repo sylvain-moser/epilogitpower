@@ -1,0 +1,238 @@
+---
+title: "Epilogitpower"
+author: "Sylvain Moser"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Epilogitpower}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  dpi=100,
+  fig.width=7,
+  cache = F,
+  warning = F
+)
+```
+
+# Introduction:
+
+Interactions between genes (known as epistasis), and formally defined as a deviation from additivity in the effect of two loci on a phenotype, have been known to exists since long time. Epistatic interactions have more recently been shown to be associated with phenotypic changes in animal models such as yeast or drosophila. However, a major controversy persists as to whether epistasis does exist in human and if so, if if plays any role in the genetic variance of complex traits. Indeed, despite the "missing heritability" problem, to which epistasis could account to some extent, the majority of human geneticist believe that most of the genetic variance is additive. 
+
+The skepticism towards the involvement of epistasis in human has been enhanced by the difficulty to show such interactions. Indeed, whereas modern computer can perform Genome-Wide-Association-Studies for additive effect quickly, the combinatorial nature of epistatic interactions leads to a sheer number of test, which is still computationally chalenging today. In addition to the computational problem, the multiple testing correction burden is very high in epistasis studies, and quickly leads to underpowered studies. As a consequence, most of the published epistatic interactions could not be replicated, increasing the skepticism towards epistasis in human.
+
+In order to provide sound experimental data allowing to prove the presence or absence of epistasis in complex human traits, we urgently need well powered epistasis studies. Unfortunately power calculations for epistasis are not trivial, cannot be performed today using popular tools such as g-power, and often require prior knowledge of quantities which are difficult to estimate. This package therefore aims to provide user-friendly power calculation for logistic-regression-based epistasis studies, which can be performed using prior knowledge easily extractible from GWAS summary data. 
+
+## Example use case:
+
+### 1) Use Case 2: Calculating power of epistasis study in a given sample size in function of the MAF:
+
+
+```{r,warning=FALSE,message=F}
+library(epilogitpower)
+```
+
+```{r}
+# set parameters:
+n_controls=(300000)
+n_cases=(30000)
+n_snps=seq(5e4,5e5,5e4)
+threshold=0.05/((n_snps*(n_snps-1))/2)
+OR=c(1.1,1.2,1.3,1.4,1.5)
+maf=c(0.05,0.2)
+# prepare paramters grid:
+power_comparison=expand.grid(n_controls=n_controls,n_cases=n_cases,threshold=threshold,OR=OR,maf=maf)
+power_comparison$n_snps=rep(n_snps,10)
+#compute power:
+powers_chi=apply(power_comparison,MARGIN = 1,function(row) compute_chi2_power(n_controls =as.numeric(row[1]),n_cases = as.numeric(row[2]),maf_snp1 = as.numeric(row[5]),maf_snp2 = as.numeric(row[5]),a_OR=1,b_OR=1,int_OR=as.numeric(row[4]),penetrance_ref_genotype= 0.1,,alpha = as.numeric(row[3]),input_type = "OR"))
+# fill in grid with results:
+power_comparison$power_snp1=powers_chi["power_snp1",]
+power_comparison$power_snp2=powers_chi["power_snp2",]
+power_comparison$power_int=powers_chi["power_int",]
+```
+
+```{r}
+#plot
+library(ggplot2)
+ggplot(data=power_comparison,aes(x=n_snps,group=maf,y=power_int,color=as.factor(maf))) +
+  geom_line() +
+  facet_wrap(~OR,labeller = label_both) + 
+  labs(colour="MAF",y="powerinteraction term",x="snps number")
+```
+
+
+
+We can appreciate that with this sample size, we have a good power to detect interaction with an OR equal or greater than 1.2 and a maf of 0.2. On the contrary, for a maf of 0.05 a reasonable power is observed only with an interaction OR of 1.5 and 50'000 SNPs. 
+
+
+### 2) Use Case 2: Compute Sample Size needed to detect a specific effect with selected power:
+
+
+```{r}
+# set parameters:
+n_controls=seq(2e5,2e6,2e5)
+n_cases=seq(0,5e5,1e4)
+n_snps=2e7
+threshold=0.05/((n_snps*(n_snps-1))/2)
+OR=c(1.15)
+maf=c(0.1)
+# prepare paramters grid:
+power_comparison=expand.grid(n_controls=n_controls,n_cases=n_cases,threshold=threshold,OR=OR,maf=maf)
+#compute power:
+powers_chi=apply(power_comparison,MARGIN = 1,function(row) compute_chi2_power(n_controls =as.numeric(row[1]),n_cases = as.numeric(row[2]),maf_snp1 = as.numeric(row[5]),maf_snp2 = as.numeric(row[5]),a_OR=1,b_OR=1,int_OR=as.numeric(row[4]),penetrance_ref_genotype= 0.1,alpha = as.numeric(row[3]),input_type = "OR"))
+# fill in grid with results:
+power_comparison$power_snp1=powers_chi["power_snp1",]
+power_comparison$power_snp2=powers_chi["power_snp2",]
+power_comparison$power_int=powers_chi["power_int",]
+```
+
+```{r }
+#plot
+library(ggplot2)
+ggplot(data=power_comparison,aes(x=n_cases,y=power_int,group=n_controls,color=as.factor(n_controls))) +
+  geom_line() +
+  labs(colour="control number",y="powerinteraction term",x="cases number")
+```
+
+
+We can appreciate here that a power of ca 80% can be achieved ca 150'000 cases and 600'000 controls. 
+
+
+## Fast power computation:
+
+Power can be easily computed by Monte Carlo simulations, in which one repeatedly simulate a dataset , fit a model and record the proportion of significant results at the given threshold. This is however slow. 
+
+The implementation provided in this package avoids Monte Carlo simulations, using statistical properties of the Wald-Test for the coefficient in the logistic regression.
+
+In order to verify these theoretical results, let us compare the power computed using the Monte Carlo simulations and the Wald-Test statistic distribution for different samples sizes: 
+
+```{r,cache=TRUE}
+n_samples=c(100,1000,5000,10000)
+threshold=c(1e-2,1e-3,1e-4,1e-5)
+n_simulations=c(10,100,1000)
+method=c("MC_simulations")
+power_simulations=expand.grid(n_samples=n_samples,threshold=threshold,method=method,n_simulations=n_simulations)
+powers=apply(power_simulations,MARGIN = 1,function(row) MC_power_analysis(n_controls =as.numeric(row[1])/2,n_cases = as.numeric(row[1])/2,maf_snp1 = 0.1,maf_snp2 = 0.1,a_OR=1.1,b_OR=0.9,int_OR=1.25,penetrance_ref_genotype=0.1,alpha = as.numeric(row[2]),input_type = "OR",n_simulations = as.numeric(row[4]),threads=4))
+power_simulations$power_snp1=powers["power_snp1",]
+power_simulations$power_snp2=powers["power_snp2",]
+power_simulations$power_int=powers["power_int",]
+```
+
+```{r}
+n_samples=c(100,1000,5000,10000)
+threshold=c(1e-2,1e-3,1e-4,1e-5)
+method=c("Chi2")
+n_simulations=c(10,100,1000)
+power_comparison=expand.grid(n_samples=n_samples,threshold=threshold,method=method,n_simulations=n_simulations)
+powers_chi=apply(power_comparison,MARGIN = 1,function(row) compute_chi2_power(n_controls =as.numeric(row[1])/2,n_cases = as.numeric(row[1])/2,maf_snp1 = 0.1,maf_snp2 = 0.1,a_OR=1.1,b_OR=0.9,int_OR=1.25,penetrance_ref_genotype=0.1,alpha = as.numeric(row[2]),input_type = "OR"))
+power_comparison$power_snp1=powers_chi["power_snp1",]
+power_comparison$power_snp2=powers_chi["power_snp2",]
+power_comparison$power_int=powers_chi["power_int",]
+```
+
+```{r }
+full_df=rbind(power_simulations,power_comparison)
+ggplot(data=full_df,aes(x=-log(threshold,base = 10),y=power_int,group=interaction(method,n_samples),color=as.factor(n_samples),linetype=method)) +
+  geom_line()+
+  facet_wrap(~n_simulations)
+```
+
+
+
+```{r,cache=TRUE}
+n_simulations=c(100,1000)
+method=c("MC_simulations")
+power_simulations=expand.grid(n_samples=n_samples,method=method,n_simulations=n_simulations)
+time_diff=apply(power_simulations,MARGIN = 1,function(row){
+  t1=Sys.time()
+  MC_power_analysis(n_controls =2000,n_cases = 2000,maf_snp1 = 0.1,maf_snp2 = 0.1,a_OR=1.1,b_OR=0.9,int_OR=1.25,penetrance_ref_genotype=0.1,alpha = 1e-3,input_type = "OR",n_simulations = as.numeric(row[3]),threads=4)
+  t2=Sys.time()
+  return(difftime(t2,t1))
+})
+power_simulations$time=time_diff
+```
+
+
+```{r}
+method=c("Chi2")
+n_simulations=c(100,1000)
+power_comparison=expand.grid(n_samples=n_samples,method=method,n_simulations=n_simulations)
+time_diff=apply(power_comparison,MARGIN = 1,function(row){
+  t1=Sys.time()
+  compute_chi2_power(n_controls =2000,n_cases = 2000,maf_snp1 = 0.1,maf_snp2 = 0.1,a_OR=1.1,b_OR=0.9,int_OR=1.25,penetrance_ref_genotype=0.1,alpha = 1e-3,input_type = "OR")
+  t2=Sys.time()
+  return(difftime(t2,t1))
+})
+power_comparison$time=time_diff
+```
+
+```{r }
+full_df=rbind(power_simulations,power_comparison)
+ggplot(data=full_df,aes(x=n_simulations,y=time,fill=method)) +
+  geom_bar(position="dodge", stat="identity")+
+  scale_x_continuous(breaks=c(100,1000),labels=c("100","1000"))
+```
+
+## Estimating the possible effect sizes of interactions:
+
+
+Let us imagine that we know from previous GWAS the following informations about the disease and the two SNPs of a potential pair: MAF of the two interactions SNPs, additive Odds Ratio of the SNPs, penetrance of the reference genotype. We can compute the possible OR for the interaction term as follow: 
+
+```{r }
+possible_int_OR(penetrance_ref_genotype = 0.3,mafa = 0.25,mafb = 0.15,a_OR = 1.1,b_OR = 1.4,plot = T)
+```
+
+
+
+#### example from a CAD GWAS:
+
+Let us here look at an example of a published epistatic pair in Coronary Atery Disease (Zeng et al 2021):
+
+The original MAFs and ORs of the two SNPs were respectively:
+
+rs1652507: OR=0.98 , MAF=0.17
+rs140570886: OR=1.46, MAF=0.015
+rs9458001: OR=1.03 MAF=0.22
+
+The penetrance for the reference genotype was computed to be 0.08693812 and the prevalence of CAD in the population is knowm to be around 9%: 
+
+As shown in the graph below, the possible ORs for the interaction of these two SNPs lies around 1.2.  
+
+```{r }
+possible_int_OR(penetrance_ref_genotype = 0.0872,mafa = 0.17,mafb = 0.22,a_OR = 0.98,b_OR = 1.03,plot = T,int_OR_upper = 2,prevalence_up = 0.1,prevalence_low = 0.08)
+```
+
+
+The actual epistasis study showed a interaction OR of 1.36, quite close to the predicted value.
+
+If we look at the rs140570886 * rs9458001 interaction the picture is different
+
+```{r }
+possible_int_OR(penetrance_ref_genotype = 0.0866,mafa = 0.22,mafb = 0.015,a_OR = 1.03,b_OR = 1.46,plot = T,int_OR_upper =3 ,prevalence_up = 0.1,prevalence_low = 0.08)
+```
+It would predict an interaction OR around 2. While the reported one is only 1.33. The OR of 1.33 would be compatible with a prevalence of 8.9% instead of 9%. This highlights how dependent this method is from the accurate estimation of the prevalence, a quantity that might be difficult to to estimate in the population, and might be very dependant between populations and ethnicity.
+
+## Specification of the underlying genetic model:
+
+Epilogitpower allow to specify one of the four following genetic model for each SNP: additive, dominant, recessive or hetero-dominant. The following graph shows the difference in power between these models and the potential error that can arise in case of model misspecification.
+
+
+```{r}
+threshold=c(1e-1,1e-2,1e-3,1e-4,1e-5)
+encoding=c("dosage","recessive","dominant","dominant_recessive")
+power_comparison=expand.grid(threshold=threshold,encoding=encoding)
+powers_chi=apply(power_comparison,MARGIN = 1,function(row) compute_chi2_power(penetrance_ref_genotype = 0.2,n_controls =20000,n_cases = 10000,maf_snp1 = 0.1,maf_snp2 = 0.25,a_OR=1,b_OR=1,int_OR=1.2,encoding=row[2],alpha = as.numeric(row[1]),input_type = "OR"))
+power_comparison$power_snp1=powers_chi["power_snp1",]
+power_comparison$power_snp2=powers_chi["power_snp2",]
+power_comparison$power_int=powers_chi["power_int",]
+```
+
+```{r }
+ggplot(data=power_comparison,aes(x=-log(threshold,base = 10),y=power_int,group=interaction(encoding),color=encoding)) +
+  geom_line()
+```
